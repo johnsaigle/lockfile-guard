@@ -1,0 +1,356 @@
+use colored::*;
+use regex::Regex;
+use std::fs;
+use std::path::Path;
+use std::process;
+use walkdir::WalkDir;
+
+#[derive(Debug)]
+struct Violation {
+    line_num: usize,
+    message: String,
+    line_content: String,
+}
+
+struct LintResult {
+    violations_found: usize,
+    files_checked: usize,
+}
+
+fn main() {
+    println!("{}", "Checking for JS package manager violations...\n".blue());
+
+    let result = lint_files();
+
+    println!();
+    println!("{}", "═══════════════════════════════════════".blue());
+
+    if result.violations_found == 0 {
+        println!("{}", "✓ No violations found!".green());
+        println!("{}", format!("Files checked: {}", result.files_checked).blue());
+        process::exit(0);
+    } else {
+        println!(
+            "{}",
+            format!(
+                "✗ Found {} violation(s) in {} files",
+                result.violations_found, result.files_checked
+            )
+            .red()
+        );
+        println!();
+        process::exit(1);
+    }
+}
+
+fn lint_files() -> LintResult {
+    let mut violations_found = 0;
+    let mut files_checked = 0;
+
+    for entry in WalkDir::new(".")
+        .into_iter()
+        .filter_entry(|e| !is_excluded(e.path()))
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
+
+        if path.is_file() && should_check_file(path) {
+            files_checked += 1;
+
+            if let Ok(content) = fs::read_to_string(path) {
+                let violations = check_file(&content);
+
+                if !violations.is_empty() {
+                    print_violations(path, &violations);
+                    violations_found += violations.len();
+                }
+            }
+        }
+    }
+
+    LintResult {
+        violations_found,
+        files_checked,
+    }
+}
+
+fn is_excluded(path: &Path) -> bool {
+    let path_str = path.to_string_lossy();
+    path_str.contains("node_modules")
+        || path_str.contains(".git")
+        || path_str.ends_with("lint-package-install.sh")
+}
+
+fn should_check_file(path: &Path) -> bool {
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let path_str = path.to_string_lossy();
+
+    // Check Dockerfiles
+    if file_name.starts_with("Dockerfile") || file_name.ends_with(".dockerfile") {
+        return true;
+    }
+
+    // Check markdown files
+    if file_name.ends_with(".md") {
+        return true;
+    }
+
+    // Check shell scripts
+    if file_name.ends_with(".sh") {
+        return true;
+    }
+
+    // Check GitHub workflow files
+    if (file_name.ends_with(".yml") || file_name.ends_with(".yaml"))
+        && path_str.contains(".github/workflows")
+    {
+        return true;
+    }
+
+    false
+}
+
+fn check_file(content: &str) -> Vec<Violation> {
+    let mut violations = Vec::new();
+
+    for (line_num, line) in content.lines().enumerate() {
+        let line_num = line_num + 1; // 1-indexed
+
+        // Skip comments and placeholders
+        if is_comment_or_placeholder(line) {
+            continue;
+        }
+
+        // Check all package managers
+        violations.extend(check_npm(line, line_num));
+        violations.extend(check_pnpm(line, line_num));
+        violations.extend(check_yarn(line, line_num));
+        violations.extend(check_bun(line, line_num));
+    }
+
+    violations
+}
+
+fn is_comment_or_placeholder(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with('#')
+        || trimmed.contains("<package>")
+        || trimmed.contains("<version>")
+}
+
+fn check_npm(line: &str, line_num: usize) -> Vec<Violation> {
+    let mut violations = Vec::new();
+
+    // Skip if it's pnpm, yarn, or bun (not npm)
+    if Regex::new(r"\b(pnpm|yarn|bun)\b").unwrap().is_match(line) {
+        return violations;
+    }
+
+    // NPM CI is always allowed
+    if Regex::new(r"\bnpm\s+ci\b").unwrap().is_match(line) {
+        return violations;
+    }
+
+    // Check for npm install or npm i
+    let npm_install_re = Regex::new(r"\bnpm\s+(install|i)(\s|$)").unwrap();
+    if npm_install_re.is_match(line) {
+        // Check if it has a version pin
+        let version_pin_re = Regex::new(r"@[0-9]+\.[0-9]+").unwrap();
+        if version_pin_re.is_match(line) {
+            return violations; // Has version pin, allowed
+        }
+
+        // Check if it's bare 'npm install' (should use npm ci)
+        let bare_install_re = Regex::new(r"\bnpm\s+(install|i)(\s+)?($|&&|;|\||#)").unwrap();
+        if bare_install_re.is_match(line) {
+            violations.push(Violation {
+                line_num,
+                message: "Use 'npm ci' instead of 'npm install' for lockfile-based installations"
+                    .to_string(),
+                line_content: line.trim().to_string(),
+            });
+        } else {
+            violations.push(Violation {
+                line_num,
+                message: "npm package installation without version pin (use 'npm i package@version')"
+                    .to_string(),
+                line_content: line.trim().to_string(),
+            });
+        }
+    }
+
+    violations
+}
+
+fn check_pnpm(line: &str, line_num: usize) -> Vec<Violation> {
+    let mut violations = Vec::new();
+
+    // Check for pnpm install without --frozen-lockfile
+    let pnpm_install_re = Regex::new(r"\bpnpm\s+install\b").unwrap();
+    if pnpm_install_re.is_match(line) {
+        let frozen_lockfile_re = Regex::new(r"--frozen-lockfile").unwrap();
+        if !frozen_lockfile_re.is_match(line) {
+            violations.push(Violation {
+                line_num,
+                message: "Use 'pnpm install --frozen-lockfile' to respect lockfile".to_string(),
+                line_content: line.trim().to_string(),
+            });
+        }
+    }
+
+    // Check for pnpm add without version
+    let pnpm_add_re = Regex::new(r"\bpnpm\s+add\s").unwrap();
+    if pnpm_add_re.is_match(line) {
+        let version_pin_re = Regex::new(r"@[0-9]+\.[0-9]+").unwrap();
+        if !version_pin_re.is_match(line) {
+            violations.push(Violation {
+                line_num,
+                message: "pnpm package installation without version pin (use 'pnpm add package@version')"
+                    .to_string(),
+                line_content: line.trim().to_string(),
+            });
+        }
+    }
+
+    violations
+}
+
+fn check_yarn(line: &str, line_num: usize) -> Vec<Violation> {
+    let mut violations = Vec::new();
+
+    // Check for yarn install or bare yarn without --frozen-lockfile or --immutable
+    let yarn_install_re = Regex::new(r"\byarn(\s+install)?(\s+)?($|&&|;|\||#)").unwrap();
+    if yarn_install_re.is_match(line) {
+        let frozen_re = Regex::new(r"--(frozen-lockfile|immutable)").unwrap();
+        if !frozen_re.is_match(line) {
+            violations.push(Violation {
+                line_num,
+                message: "Use 'yarn install --frozen-lockfile' to respect lockfile".to_string(),
+                line_content: line.trim().to_string(),
+            });
+        }
+    }
+
+    // Check for yarn add without version
+    let yarn_add_re = Regex::new(r"\byarn\s+(global\s+)?add\s").unwrap();
+    if yarn_add_re.is_match(line) {
+        let version_pin_re = Regex::new(r"@[0-9]+\.[0-9]+").unwrap();
+        if !version_pin_re.is_match(line) {
+            violations.push(Violation {
+                line_num,
+                message: "yarn package installation without version pin (use 'yarn add package@version')"
+                    .to_string(),
+                line_content: line.trim().to_string(),
+            });
+        }
+    }
+
+    violations
+}
+
+fn check_bun(line: &str, line_num: usize) -> Vec<Violation> {
+    let mut violations = Vec::new();
+
+    // Check for bun install without --frozen-lockfile
+    let bun_install_re = Regex::new(r"\bbun\s+install\b").unwrap();
+    if bun_install_re.is_match(line) {
+        let frozen_lockfile_re = Regex::new(r"--frozen-lockfile").unwrap();
+        if !frozen_lockfile_re.is_match(line) {
+            violations.push(Violation {
+                line_num,
+                message: "Use 'bun install --frozen-lockfile' to respect lockfile".to_string(),
+                line_content: line.trim().to_string(),
+            });
+        }
+    }
+
+    // Check for bun add without version
+    let bun_add_re = Regex::new(r"\bbun\s+add\s").unwrap();
+    if bun_add_re.is_match(line) {
+        let version_pin_re = Regex::new(r"@[0-9]+\.[0-9]+").unwrap();
+        if !version_pin_re.is_match(line) {
+            violations.push(Violation {
+                line_num,
+                message: "bun package installation without version pin (use 'bun add package@version')"
+                    .to_string(),
+                line_content: line.trim().to_string(),
+            });
+        }
+    }
+
+    violations
+}
+
+fn print_violations(path: &Path, violations: &[Violation]) {
+    println!("{}", format!("✗ {}", path.display()).red());
+    for violation in violations {
+        println!(
+            "  {} {}",
+            format!("Line {}:", violation.line_num).yellow(),
+            violation.message
+        );
+        println!("  {} {}", ">".blue(), violation.line_content);
+    }
+    println!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_npm_ci_allowed() {
+        let violations = check_npm("npm ci", 1);
+        assert_eq!(violations.len(), 0);
+    }
+
+    #[test]
+    fn test_npm_install_bare_violation() {
+        let violations = check_npm("npm install", 1);
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].message.contains("npm ci"));
+    }
+
+    #[test]
+    fn test_npm_install_with_version_allowed() {
+        let violations = check_npm("npm i eslint@8.50.0", 1);
+        assert_eq!(violations.len(), 0);
+    }
+
+    #[test]
+    fn test_npm_install_without_version_violation() {
+        let violations = check_npm("npm i eslint", 1);
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].message.contains("version pin"));
+    }
+
+    #[test]
+    fn test_pnpm_install_frozen_allowed() {
+        let violations = check_pnpm("pnpm install --frozen-lockfile", 1);
+        assert_eq!(violations.len(), 0);
+    }
+
+    #[test]
+    fn test_pnpm_install_violation() {
+        let violations = check_pnpm("pnpm install", 1);
+        assert_eq!(violations.len(), 1);
+    }
+
+    #[test]
+    fn test_yarn_frozen_allowed() {
+        let violations = check_yarn("yarn install --frozen-lockfile", 1);
+        assert_eq!(violations.len(), 0);
+    }
+
+    #[test]
+    fn test_bun_add_with_version_allowed() {
+        let violations = check_bun("bun add react@18.2.0", 1);
+        assert_eq!(violations.len(), 0);
+    }
+
+    #[test]
+    fn test_comment_skipped() {
+        assert!(is_comment_or_placeholder("# npm install"));
+        assert!(is_comment_or_placeholder("npm install <package>"));
+    }
+}

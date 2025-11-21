@@ -1,0 +1,11 @@
+name: 'Lockfile Guard'
+description: 'Lints for improper JS package manager usage (npm, pnpm, yarn, bun) to enforce supply chain security'
+author: 'Your Name'
+
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
