@@ -1,4 +1,4 @@
-use colored::*;
+use colored::Colorize;
 use regex::Regex;
 use std::fs;
 use std::path::Path;
@@ -44,25 +44,25 @@ fn main() {
 }
 
 fn lint_files() -> LintResult {
-    let mut violations_found = 0;
-    let mut files_checked = 0;
+    let mut violations_found: usize = 0;
+    let mut files_checked: usize = 0;
 
     for entry in WalkDir::new(".")
         .into_iter()
         .filter_entry(|e| !is_excluded(e.path()))
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
     {
         let path = entry.path();
 
         if path.is_file() && should_check_file(path) {
-            files_checked += 1;
+            files_checked = files_checked.saturating_add(1);
 
             if let Ok(content) = fs::read_to_string(path) {
                 let violations = check_file(&content);
 
                 if !violations.is_empty() {
                     print_violations(path, &violations);
-                    violations_found += violations.len();
+                    violations_found = violations_found.saturating_add(violations.len());
                 }
             }
         }
@@ -91,19 +91,27 @@ fn should_check_file(path: &Path) -> bool {
     }
 
     // Check markdown files
-    if file_name.ends_with(".md") {
+    if Path::new(file_name)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+    {
         return true;
     }
 
     // Check shell scripts
-    if file_name.ends_with(".sh") {
+    if Path::new(file_name)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("sh"))
+    {
         return true;
     }
 
     // Check GitHub workflow files
-    if (file_name.ends_with(".yml") || file_name.ends_with(".yaml"))
-        && path_str.contains(".github/workflows")
-    {
+    let is_yaml = Path::new(file_name)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml"));
+    
+    if is_yaml && path_str.contains(".github/workflows") {
         return true;
     }
 
@@ -112,9 +120,21 @@ fn should_check_file(path: &Path) -> bool {
 
 fn check_file(content: &str) -> Vec<Violation> {
     let mut violations = Vec::new();
+    let mut in_code_block = false;
 
     for (line_num, line) in content.lines().enumerate() {
-        let line_num = line_num + 1; // 1-indexed
+        let line_num = line_num.saturating_add(1); // 1-indexed
+
+        // Track code blocks in markdown
+        if line.trim().starts_with("```") {
+            in_code_block = !in_code_block;
+            continue;
+        }
+
+        // Skip lines inside code blocks
+        if in_code_block {
+            continue;
+        }
 
         // Skip comments and placeholders
         if is_comment_or_placeholder(line) {
@@ -136,6 +156,9 @@ fn is_comment_or_placeholder(line: &str) -> bool {
     trimmed.starts_with('#')
         || trimmed.contains("<package>")
         || trimmed.contains("<version>")
+        || trimmed.starts_with('`')  // Skip inline code
+        || trimmed.starts_with('>')  // Skip quoted text/blockquotes
+        || trimmed.starts_with('-')  // Skip markdown list items that are examples
 }
 
 fn check_npm(line: &str, line_num: usize) -> Vec<Violation> {
