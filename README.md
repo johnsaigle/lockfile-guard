@@ -44,14 +44,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: your-username/lockfile-guard@v1
+      - uses: johnsaigle/lockfile-guard@v1
 ```
 
 ### CLI
 
 ```bash
 # Install
-cargo install --git https://github.com/your-username/lockfile-guard
+cargo install --git https://github.com/johnsaigle/lockfile-guard
 
 # Run
 lockfile-guard
