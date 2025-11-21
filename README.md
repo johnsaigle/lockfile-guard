@@ -74,14 +74,6 @@ Exit code 0 on success, 1 if violations found.
 ✗ Found 2 violation(s) in 2 files
 ```
 
-## Development
-
-```bash
-cargo build --release
-cargo test
-cargo clippy -- -D warnings
-```
-
 ## License
 
 Apache 2.0
