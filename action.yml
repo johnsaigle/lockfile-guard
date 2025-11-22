@@ -7,5 +7,34 @@ branding:
   color: 'blue'
 
 runs:
-  using: 'docker'
-  image: 'Dockerfile'
+  using: 'composite'
+  steps:
+    - name: Download lockfile-guard binary
+      shell: bash
+      run: |
+        # Try to get the latest release binary
+        REPO="${{ github.action_repository }}"
+        if [ -z "$REPO" ]; then
+          REPO="${GITHUB_REPOSITORY}"
+        fi
+        
+        echo "Downloading lockfile-guard binary from ${REPO}..."
+        
+        # Get latest release
+        LATEST_RELEASE=$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+        
+        if [ -z "$LATEST_RELEASE" ]; then
+          echo "No release found. Please create a release with a binary first."
+          echo "See: https://github.com/${REPO}/releases"
+          exit 1
+        fi
+        
+        echo "Latest release: ${LATEST_RELEASE}"
+        
+        # Download binary
+        curl -sSL -o lockfile-guard "https://github.com/${REPO}/releases/download/${LATEST_RELEASE}/lockfile-guard-linux-x64"
+        chmod +x lockfile-guard
+
+    - name: Run lockfile-guard
+      shell: bash
+      run: ./lockfile-guard
