@@ -44,7 +44,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: johnsaigle/lockfile-guard@v1
+      - uses: johnsaigle/lockfile-guard@main
+```
+
+To pin to a specific commit:
+
+```yaml
+      - uses: johnsaigle/lockfile-guard@main
+        with:
+          commit: abc123f  # specific commit SHA
 ```
 
 ### CLI

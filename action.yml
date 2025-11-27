@@ -6,34 +6,56 @@ branding:
   icon: 'shield'
   color: 'blue'
 
+inputs:
+  commit:
+    description: 'Specific commit SHA to use (defaults to latest on main branch)'
+    required: false
+    default: ''
+
 runs:
   using: 'composite'
   steps:
     - name: Download lockfile-guard binary
       shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: |
-        # Try to get the latest release binary
-        REPO="${{ github.action_repository }}"
-        if [ -z "$REPO" ]; then
-          REPO="${GITHUB_REPOSITORY}"
+        # Repository where lockfile-guard is published
+        LOCKFILE_GUARD_REPO="johnsaigle/lockfile-guard"
+        
+        # Determine which commit to use
+        COMMIT="${{ inputs.commit }}"
+        if [ -z "$COMMIT" ]; then
+          echo "No commit specified, fetching latest from main branch..."
+          COMMIT=$(curl -s "https://api.github.com/repos/${LOCKFILE_GUARD_REPO}/commits/main" | grep '"sha"' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
         fi
         
-        echo "Downloading lockfile-guard binary from ${REPO}..."
+        echo "Using lockfile-guard from commit: ${COMMIT}"
         
-        # Get latest release
-        LATEST_RELEASE=$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+        # Try to download artifact from GitHub Actions
+        echo "Downloading binary artifact from ${LOCKFILE_GUARD_REPO}..."
         
-        if [ -z "$LATEST_RELEASE" ]; then
-          echo "No release found. Please create a release with a binary first."
-          echo "See: https://github.com/${REPO}/releases"
+        # Use gh CLI to download artifact if available
+        if command -v gh &> /dev/null; then
+          # Try to download the specific commit artifact first
+          if gh run download --repo "${LOCKFILE_GUARD_REPO}" -n "lockfile-guard-${COMMIT}" 2>/dev/null; then
+            mv lockfile-guard-linux-x64 lockfile-guard
+            chmod +x lockfile-guard
+            echo "Successfully downloaded binary for commit ${COMMIT}"
+          # Fall back to latest
+          elif gh run download --repo "${LOCKFILE_GUARD_REPO}" -n "lockfile-guard-latest" 2>/dev/null; then
+            mv lockfile-guard-linux-x64 lockfile-guard
+            chmod +x lockfile-guard
+            echo "Successfully downloaded latest binary"
+          else
+            echo "Error: Could not download binary artifact."
+            echo "Please ensure the lockfile-guard repository has built binaries available."
+            exit 1
+          fi
+        else
+          echo "Error: gh CLI not available. Cannot download artifacts."
           exit 1
         fi
-        
-        echo "Latest release: ${LATEST_RELEASE}"
-        
-        # Download binary
-        curl -sSL -o lockfile-guard "https://github.com/${REPO}/releases/download/${LATEST_RELEASE}/lockfile-guard-linux-x64"
-        chmod +x lockfile-guard
 
     - name: Run lockfile-guard
       shell: bash
