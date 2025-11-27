@@ -1,6 +1,6 @@
 name: 'Lockfile Guard'
 description: 'Lints for improper JS package manager usage (npm, pnpm, yarn, bun) to enforce supply chain security'
-author: 'Your Name'
+author: 'John Saigle'
 
 branding:
   icon: 'shield'
