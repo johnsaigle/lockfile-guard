@@ -1,7 +1,8 @@
 use colored::Colorize;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use regex::Regex;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
 use walkdir::WalkDir;
 
@@ -20,7 +21,9 @@ struct LintResult {
 fn main() {
     println!("{}", "Checking for JS package manager violations...\n".blue());
 
-    let result = lint_files();
+    // Collect all .gitignore files in the repository
+    let gitignores = collect_gitignores();
+    let result = lint_files(&gitignores);
 
     println!();
     println!("{}", "═══════════════════════════════════════".blue());
@@ -43,7 +46,48 @@ fn main() {
     }
 }
 
-fn lint_files() -> LintResult {
+fn collect_gitignores() -> Vec<(PathBuf, Gitignore)> {
+    let mut gitignores = Vec::new();
+
+    for entry in WalkDir::new(".")
+        .into_iter()
+        .filter_entry(|e| {
+            let path = e.path();
+            // Don't traverse into .git directory
+            !path.to_string_lossy().contains("/.git/")
+        })
+        .filter_map(Result::ok)
+    {
+        let path = entry.path();
+        if path.is_file() && path.file_name().and_then(|n| n.to_str()) == Some(".gitignore") {
+            if let Some(parent) = path.parent() {
+                let mut builder = GitignoreBuilder::new(parent);
+                if builder.add(path).is_none() {
+                    if let Ok(gitignore) = builder.build() {
+                        gitignores.push((parent.to_path_buf(), gitignore));
+                    }
+                }
+            }
+        }
+    }
+
+    gitignores
+}
+
+fn is_ignored(path: &Path, gitignores: &[(PathBuf, Gitignore)]) -> bool {
+    for (base_path, gitignore) in gitignores {
+        // Check if the file is under this gitignore's directory
+        if let Ok(relative) = path.strip_prefix(base_path) {
+            let matched = gitignore.matched(relative, path.is_dir());
+            if matched.is_ignore() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn lint_files(gitignores: &[(PathBuf, Gitignore)]) -> LintResult {
     let mut violations_found: usize = 0;
     let mut files_checked: usize = 0;
 
@@ -61,6 +105,11 @@ fn lint_files() -> LintResult {
                 let violations = check_file(&content);
 
                 if !violations.is_empty() {
+                    // Skip reporting if file is in gitignore
+                    if is_ignored(path, gitignores) {
+                        continue;
+                    }
+
                     print_violations(path, &violations);
                     violations_found = violations_found.saturating_add(violations.len());
                 }
